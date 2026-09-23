@@ -5,6 +5,7 @@ name: pg-punggol
 #   /DATA/AppData/pg-punggol/scraper/punggol_scraper.py
 #   /DATA/AppData/pg-punggol/scraper/scheduler.py
 #   /DATA/AppData/pg-punggol/web/index.html
+#   /DATA/AppData/pg-punggol/web/nginx.conf
 #   /DATA/AppData/pg-punggol/data/      (results.json is written here)
 #   /DATA/AppData/pg-punggol/runtime/   (created on first start: repo, Scrapling, Chromium)
 
@@ -38,6 +39,7 @@ services:
       - "8089:80"
     volumes:
       - /DATA/AppData/pg-punggol/web/index.html:/usr/share/nginx/html/index.html:ro
+      - /DATA/AppData/pg-punggol/web/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - /DATA/AppData/pg-punggol/data:/usr/share/nginx/html/data:ro
 
 x-casaos:

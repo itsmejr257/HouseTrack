@@ -8,7 +8,7 @@ Two containers:
 | Container | What it does |
 |---|---|
 | `scraper` | Runs once a day at 00:00 Singapore time and writes `data/results.json` |
-| `web` | nginx serving the page on port 8089 |
+| `web` | nginx serving the page on port 8089, and passing the **Check now** button through to the scraper |
 
 Scraping is done with [kleash/propertyguru-scraper](https://github.com/kleash/propertyguru-scraper),
 which provides the Scrapling stealth browser (it clears Cloudflare) and the parser for the
@@ -17,6 +17,9 @@ than vendored here.
 
 ## The page
 
+- A **Check now** button starts a check straight away instead of waiting for midnight. It
+  shows progress while the check runs (10–15 minutes) and reloads the list when it's done.
+  If a check is already running, pressing it again does nothing.
 - Units grouped under 301 / 302 / 303 tiles, which double as filters
 - Sort by price, by when the unit was first seen, or **Date listed**, which groups units
   under a heading per listing date, newest first
@@ -72,6 +75,10 @@ docker exec pg-punggol-scraper python /app/punggol_scraper.py --mode rent
 
 ## Troubleshooting
 
+- **"Couldn't reach the scraper" after pressing Check now**: the scraper container isn't
+  answering yet. On first start it spends a few minutes installing; the Logs tab shows progress.
+  If you're upgrading an existing install, make sure `web/nginx.conf` was copied to the NAS
+  and both containers were recreated.
 - **`ERROR: No Cloudflare challenge found`** — normal. Scrapling says this when a page loads
   without a challenge to solve.
 - **`still blocked after 3 retries`** — PropertyGuru refused that page. The HTML it returned is
@@ -87,8 +94,9 @@ docker exec pg-punggol-scraper python /app/punggol_scraper.py --mode rent
 docker-compose.yml        both containers
 scraper/start.sh          first-run install of the upstream repo + Scrapling
 scraper/punggol_scraper.py  block pages, Punggol sweep, address matching
-scraper/scheduler.py      daily schedule, results.json, logging
+scraper/scheduler.py      daily schedule, "Check now" API, results.json, logging
 web/index.html            the page (no build step, plain HTML/CSS/JS)
+web/nginx.conf            serves the page, forwards /api/ to the scraper for "Check now"
 data/                     results.json, block_ids.json, scraper.log, debug/ (gitignored)
 runtime/                  installed dependencies and Chromium (gitignored)
 ```
