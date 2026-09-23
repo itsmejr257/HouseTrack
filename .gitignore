@@ -1,0 +1,6 @@
+# Scraper output and installed dependencies — machine-specific, not source
+data/*
+!data/.gitkeep
+runtime/
+__pycache__/
+*.pyc

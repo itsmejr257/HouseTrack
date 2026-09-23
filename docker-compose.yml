@@ -1,0 +1,59 @@
+name: pg-punggol
+
+# Expects this folder on ZimaOS at /DATA/AppData/pg-punggol:
+#   /DATA/AppData/pg-punggol/scraper/start.sh
+#   /DATA/AppData/pg-punggol/scraper/punggol_scraper.py
+#   /DATA/AppData/pg-punggol/scraper/scheduler.py
+#   /DATA/AppData/pg-punggol/web/index.html
+#   /DATA/AppData/pg-punggol/data/      (results.json is written here)
+#   /DATA/AppData/pg-punggol/runtime/   (created on first start: repo, Scrapling, Chromium)
+
+services:
+  scraper:
+    image: mcr.microsoft.com/playwright/python:v1.47.0-jammy
+    container_name: pg-punggol-scraper
+    restart: unless-stopped
+    init: true
+    shm_size: "1gb"           # Chromium crashes with Docker's default 64 MB /dev/shm
+    working_dir: /app
+    environment:
+      TZ: Asia/Singapore
+      RUN_AT: "00:00"         # daily run time, 24h
+      MODES: sale             # sale, rent, or sale,rent
+      RUN_ON_START: "true"    # also scrape once when the container starts
+      SWEEP: "true"           # also scan all Punggol HDB listings for unlettered "301/302/303"
+      DELAY: "5"              # seconds between page loads
+      DATA_DIR: /data
+    volumes:
+      - /DATA/AppData/pg-punggol/scraper:/app:ro
+      - /DATA/AppData/pg-punggol/data:/data
+      - /DATA/AppData/pg-punggol/runtime:/runtime
+    command: ["sh", "/app/start.sh"]
+
+  web:
+    image: nginx:1.27-alpine
+    container_name: pg-punggol-web
+    restart: unless-stopped
+    ports:
+      - "8089:80"
+    volumes:
+      - /DATA/AppData/pg-punggol/web/index.html:/usr/share/nginx/html/index.html:ro
+      - /DATA/AppData/pg-punggol/data:/usr/share/nginx/html/data:ro
+
+x-casaos:
+  architectures:
+    - amd64
+    - arm64
+  main: web
+  port_map: "8089"
+  scheme: http
+  index: /
+  category: Utilities
+  author: self
+  developer: self
+  title:
+    en_us: Punggol Units
+  tagline:
+    en_us: Daily PropertyGuru listings at Blk 301–303 Punggol
+  description:
+    en_us: Scrapes PropertyGuru every night and shows the available units.
