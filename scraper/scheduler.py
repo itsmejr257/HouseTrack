@@ -11,14 +11,20 @@ Environment variables (all optional):
     DELAY         seconds between page loads             (default: 5)
     SWEEP         "false" to skip the all-Punggol sweep  (default: true)
     DATA_DIR      where results.json is written          (default: /data)
+    CONTROL_PORT  port for the "Check now" API           (default: 8000)
+
+The web container proxies /api/ to CONTROL_PORT:
+    GET  /status  {"running": bool, "started_at": iso, "trigger": "schedule"|"manual"|...}
+    POST /run     start a check now; 202 if started, 409 if one is already running
 """
 
 import json
+import http.server
 import logging
 import logging.handlers
 import os
 import sys
-import time
+import threading
 from datetime import datetime, timedelta, timezone
 
 import punggol_scraper as pg
@@ -36,6 +42,12 @@ DATA_DIR = os.getenv("DATA_DIR", "/data")
 RESULTS = os.path.join(DATA_DIR, "results.json")
 LOG_FILE = os.path.join(DATA_DIR, "scraper.log")
 LOG_MAX_BYTES = int(os.getenv("LOG_MAX_BYTES", str(1_000_000)))
+CONTROL_PORT = int(os.getenv("CONTROL_PORT", "8000"))
+
+# Shared between the main loop and the control server's request threads.
+_lock = threading.Lock()
+_run_now = threading.Event()
+_current = {"running": False, "started_at": None, "trigger": None}
 
 
 class _TZFormatter(logging.Formatter):
@@ -138,6 +150,67 @@ def run_once():
         f"in {(finished - started).seconds}s")
 
 
+def run_guarded(trigger):
+    with _lock:
+        _run_now.clear()
+        _current.update(running=True, started_at=datetime.now(TZ).isoformat(), trigger=trigger)
+    try:
+        run_once()
+    except Exception:
+        logging.getLogger("scheduler").exception("Run failed")
+    finally:
+        with _lock:
+            _current.update(running=False)
+
+
+def request_run():
+    """Called from the web page. Returns False if a check is already running or queued."""
+    with _lock:
+        if _current["running"] or _run_now.is_set():
+            return False
+        _run_now.set()
+        return True
+
+
+class ControlHandler(http.server.BaseHTTPRequestHandler):
+    def _json(self, code, body):
+        data = json.dumps(body).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _status(self):
+        with _lock:
+            return {**_current, "queued": _run_now.is_set()}
+
+    def do_GET(self):
+        if self.path.rstrip("/") == "/status":
+            self._json(200, self._status())
+        else:
+            self._json(404, {"error": "not found"})
+
+    def do_POST(self):
+        if self.path.rstrip("/") != "/run":
+            self._json(404, {"error": "not found"})
+        elif request_run():
+            log("Check requested from the web page")
+            self._json(202, self._status())
+        else:
+            self._json(409, self._status())
+
+    def log_message(self, *args):  # the page polls /status; keep that out of scraper.log
+        pass
+
+
+def start_control_server():
+    server = http.server.ThreadingHTTPServer(("0.0.0.0", CONTROL_PORT), ControlHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    log(f"Control API listening on port {CONTROL_PORT}")
+
+
 def seconds_until_next_run():
     hh, mm = (int(x) for x in RUN_AT.split(":"))
     now = datetime.now(TZ)
@@ -153,19 +226,21 @@ def main():
     if not os.path.exists(RESULTS):
         write_atomic({"updated_at": None, "status": "pending", "message": "",
                       "modes": MODES, "last_success_at": None, "listings": []})
+    start_control_server()
     if RUN_ON_START:
-        run_once()
+        run_guarded("startup")
     while True:
         wait, nxt = seconds_until_next_run()
         log(f"Next run at {nxt:%Y-%m-%d %H:%M}")
         # Sleep in chunks so clock drift or NAS sleep doesn't make us miss the slot badly.
+        # A "Check now" from the web page wakes us early.
+        trigger = "schedule"
         while wait > 0:
-            time.sleep(min(wait, 300))
+            if _run_now.wait(min(wait, 300)):
+                trigger = "manual"
+                break
             wait = (nxt - datetime.now(TZ)).total_seconds()
-        try:
-            run_once()
-        except Exception:
-            logging.getLogger("scheduler").exception("Run failed")
+        run_guarded(trigger)
 
 
 if __name__ == "__main__":

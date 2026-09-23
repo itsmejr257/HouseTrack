@@ -50,6 +50,15 @@
   }
   .status { color: var(--muted); margin: 0; font-size: 0.95rem; }
   .status strong { color: var(--ink); font-weight: 600; }
+  .statusrow { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between; }
+  .runline { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+  .runline[hidden] { display: none; }
+  .runline .dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--b301); flex: none;
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  .runline.err .dot { background: #B3261E; animation: none; }
+  @keyframes pulse { 50% { opacity: .25; } }
 
   .notice {
     margin: 20px 0 0; padding: 12px 16px; border-radius: 6px;
@@ -87,6 +96,9 @@
     padding: 6px 12px; border-radius: 999px; cursor: pointer;
   }
   .ctl[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .ctl.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); font-weight: 600; padding: 8px 16px; }
+  .ctl.primary:hover { opacity: .88; }
+  .ctl:disabled { opacity: .55; cursor: default; }
   select.ctl { padding-right: 8px; background: var(--surface); }
   label.sort { color: var(--muted); font-size: .9rem; display: flex; gap: 8px; align-items: center; }
 
@@ -155,14 +167,18 @@
     li.unit a.open { grid-column: 2; }
     .sign { font-size: 1.25rem; }
   }
-  @media (prefers-reduced-motion: reduce) { .block { transition: none; } }
+  @media (prefers-reduced-motion: reduce) { .block { transition: none; } .runline .dot { animation: none; } }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
     <h1>Blk 301–303 Punggol</h1>
-    <p class="status" id="status">Loading the latest check…</p>
+    <div class="statusrow">
+      <p class="status" id="status">Loading the latest check…</p>
+      <button class="ctl primary" id="run-now" type="button">Check now</button>
+    </div>
+    <p class="status runline" id="run-status" role="status" hidden><span class="dot"></span><span id="run-text"></span></p>
     <div class="notice" id="notice" hidden></div>
   </header>
 
@@ -211,6 +227,7 @@ const priceNum = (p) => {
   const m = String(p || "").replace(/,/g, "").match(/\d+(\.\d+)?/);
   return m ? parseFloat(m[0]) : Infinity;
 };
+const fmtTime = (iso) => new Date(iso).toLocaleTimeString("en-SG", { hour: "numeric", minute: "2-digit" });
 const fmtDate = (iso) => iso ? new Date(iso).toLocaleString("en-SG", {
   day: "numeric", month: "short", hour: "numeric", minute: "2-digit"
 }) : "never";
@@ -383,6 +400,62 @@ async function loadLog() {
   }
 }
 
+// "Check now": the scraper's control API, proxied by nginx at api/ (see nginx.conf).
+const run = { running: false, timer: null, error: "" };
+
+function renderRun() {
+  const btn = $("run-now"), line = $("run-status");
+  btn.disabled = run.running;
+  btn.textContent = run.running ? "Checking…" : "Check now";
+  line.classList.toggle("err", !!run.error);
+  if (run.error) {
+    line.hidden = false;
+    $("run-text").textContent = run.error;
+  } else if (run.running) {
+    line.hidden = false;
+    $("run-text").textContent = (run.startedAt ? `Checking PropertyGuru, started ${fmtTime(run.startedAt)}. ` :
+      "Starting a check. ") + "This takes 10–15 minutes; the list updates when it's done.";
+  } else {
+    line.hidden = true;
+  }
+}
+
+async function pollRun() {
+  clearTimeout(run.timer);
+  try {
+    const res = await fetch("api/status", { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const s = await res.json();
+    const wasRunning = run.running;
+    run.running = !!(s.running || s.queued);
+    run.startedAt = s.running ? s.started_at : null;
+    if (wasRunning && !run.running) load();
+    if (run.running) run.error = "";
+  } catch (err) {
+    // Scraper still installing or restarting; the button stays usable and explains on click.
+  }
+  renderRun();
+  if (run.running && !$("panel-logs").hidden) loadLog();
+  run.timer = setTimeout(pollRun, run.running ? 5000 : 60000);
+}
+
+$("run-now").addEventListener("click", async () => {
+  run.error = "";
+  run.running = true; run.startedAt = null;
+  renderRun();
+  try {
+    const res = await fetch("api/run", { method: "POST" });
+    // 409 means a check is already running, which is what the user wanted anyway.
+    if (res.status !== 202 && res.status !== 409) throw new Error(`HTTP ${res.status}`);
+  } catch (err) {
+    run.running = false;
+    run.error = "Couldn't reach the scraper. If it has just started it may still be installing; " +
+      "the Logs tab shows how far it has got.";
+  }
+  renderRun();
+  run.timer = setTimeout(pollRun, 1500);
+});
+
 async function load() {
   try {
     const res = await fetch("data/results.json", { cache: "no-store" });
@@ -396,6 +469,7 @@ async function load() {
   }
 }
 load();
+pollRun();
 setInterval(() => {
   load();
   if (!$("panel-logs").hidden) loadLog();
